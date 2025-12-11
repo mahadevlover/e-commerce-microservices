@@ -1,0 +1,129 @@
+{
+  "AWSEBDockerrunVersion": 2,
+  "containerDefinitions": [
+    {
+      "name": "product-service",
+      "image": "YOUR_DOCKERHUB_USERNAME/product-service:latest",
+      "essential": true,
+      "memory": 256,
+      "portMappings": [
+        {
+          "hostPort": 3001,
+          "containerPort": 3001
+        }
+      ],
+      "environment": [
+        {
+          "name": "PORT",
+          "value": "3001"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})\""
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/aws/elasticbeanstalk/product-service",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "product-service"
+        }
+      }
+    },
+    {
+      "name": "order-service",
+      "image": "YOUR_DOCKERHUB_USERNAME/order-service:latest",
+      "essential": true,
+      "memory": 256,
+      "portMappings": [
+        {
+          "hostPort": 3002,
+          "containerPort": 3002
+        }
+      ],
+      "environment": [
+        {
+          "name": "PORT",
+          "value": "3002"
+        },
+        {
+          "name": "PRODUCT_SERVICE_URL",
+          "value": "http://product-service:3001"
+        }
+      ],
+      "links": [
+        "product-service"
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://localhost:3002/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})\""
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/aws/elasticbeanstalk/order-service",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "order-service"
+        }
+      }
+    },
+    {
+      "name": "frontend",
+      "image": "YOUR_DOCKERHUB_USERNAME/frontend:latest",
+      "essential": true,
+      "memory": 256,
+      "portMappings": [
+        {
+          "hostPort": 80,
+          "containerPort": 80
+        }
+      ],
+      "environment": [
+        {
+          "name": "REACT_APP_PRODUCT_SERVICE_URL",
+          "value": "http://PRODUCT_SERVICE_ELB_URL:3001"
+        },
+        {
+          "name": "REACT_APP_ORDER_SERVICE_URL",
+          "value": "http://ORDER_SERVICE_ELB_URL:3002"
+        }
+      ],
+      "links": [
+        "product-service",
+        "order-service"
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "wget --quiet --tries=1 --spider http://localhost/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/aws/elasticbeanstalk/frontend",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "frontend"
+        }
+      }
+    }
+  ]
+}
+
