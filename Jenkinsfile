@@ -10,9 +10,12 @@ pipeline {
         // Go to Jenkins > Manage Jenkins > Configure System > Global properties > Environment variables
         // Add: DOCKERHUB_USERNAME = your-dockerhub-username
         DOCKERHUB_USERNAME = "${env.DOCKERHUB_USERNAME ?: params.DOCKERHUB_USERNAME_PARAM ?: 'YOUR_DOCKERHUB_USERNAME'}"
-        AWS_EB_APP_NAME = 'ecommerce-microservices'
-        AWS_EB_ENV_NAME = 'ecommerce-prod'
-        AWS_REGION = 'us-east-1'
+        // AWS variables - only used if deploying to AWS
+        AWS_EB_APP_NAME = "${env.AWS_EB_APP_NAME ?: 'ecommerce-microservices'}"
+        AWS_EB_ENV_NAME = "${env.AWS_EB_ENV_NAME ?: 'ecommerce-prod'}"
+        AWS_REGION = "${env.AWS_REGION ?: 'us-east-1'}"
+        // Flag to enable AWS deployment (set to 'true' if you want AWS deployment)
+        ENABLE_AWS_DEPLOYMENT = "${env.ENABLE_AWS_DEPLOYMENT ?: 'false'}"
     }
     
     stages {
@@ -128,18 +131,40 @@ pipeline {
         }
         
         stage('Prepare EB Deployment') {
+            when {
+                expression { 
+                    return env.ENABLE_AWS_DEPLOYMENT == 'true' && env.DOCKERHUB_USERNAME != 'YOUR_DOCKERHUB_USERNAME'
+                }
+            }
             steps {
                 echo 'Stage 5: Preparing Elastic Beanstalk deployment package'
                 script {
-                    // Update Dockerrun.aws.json with actual image tags
-                    sh '''
-                        cd infra
-                        sed -i "s/YOUR_DOCKERHUB_USERNAME/${DOCKERHUB_USERNAME}/g" Dockerrun.aws.json
-                        sed -i "s/:latest/:${GIT_COMMIT_SHORT}/g" Dockerrun.aws.json
-                        
-                        # Create deployment package
-                        zip -r ../eb-deploy.zip Dockerrun.aws.json
-                    '''
+                    try {
+                        // Update Dockerrun.aws.json with actual image tags
+                        sh '''
+                            if [ -f infra/Dockerrun.aws.json ]; then
+                                cd infra
+                                # Use sed with backup for compatibility (macOS/BSD sed)
+                                if sed --version >/dev/null 2>&1; then
+                                    # GNU sed (Linux)
+                                    sed -i "s/YOUR_DOCKERHUB_USERNAME/${DOCKERHUB_USERNAME}/g" Dockerrun.aws.json
+                                    sed -i "s/:latest/:${GIT_COMMIT_SHORT}/g" Dockerrun.aws.json
+                                else
+                                    # BSD sed (macOS)
+                                    sed -i '' "s/YOUR_DOCKERHUB_USERNAME/${DOCKERHUB_USERNAME}/g" Dockerrun.aws.json
+                                    sed -i '' "s/:latest/:${GIT_COMMIT_SHORT}/g" Dockerrun.aws.json
+                                fi
+                                
+                                # Create deployment package
+                                zip -r ../eb-deploy.zip Dockerrun.aws.json || echo "Zip command failed, continuing..."
+                            else
+                                echo "Dockerrun.aws.json not found. Skipping EB package preparation."
+                            fi
+                        '''
+                    } catch (Exception e) {
+                        echo "EB deployment preparation skipped: ${e.getMessage()}"
+                        echo "This is optional if you're not deploying to AWS."
+                    }
                 }
             }
         }
@@ -147,7 +172,7 @@ pipeline {
         stage('Deploy to AWS Elastic Beanstalk') {
             when {
                 expression { 
-                    return env.DOCKERHUB_USERNAME != 'YOUR_DOCKERHUB_USERNAME' 
+                    return env.ENABLE_AWS_DEPLOYMENT == 'true' && env.DOCKERHUB_USERNAME != 'YOUR_DOCKERHUB_USERNAME'
                 }
             }
             steps {
@@ -188,7 +213,7 @@ pipeline {
         stage('Smoke Tests') {
             when {
                 expression { 
-                    return env.DOCKERHUB_USERNAME != 'YOUR_DOCKERHUB_USERNAME' 
+                    return env.ENABLE_AWS_DEPLOYMENT == 'true' && env.DOCKERHUB_USERNAME != 'YOUR_DOCKERHUB_USERNAME'
                 }
             }
             steps {
@@ -263,30 +288,30 @@ pipeline {
         failure {
             echo 'Pipeline failed. Check logs above for details.'
             script {
-                try {
-                    // Rollback to previous version (only if AWS deployment stage ran)
-                    if (fileExists('infra/last-successful-version.txt')) {
-                        echo 'Attempting rollback...'
-                        sh '''
-                            cd infra
-                            if [ -f last-successful-version.txt ]; then
-                                PREV_VERSION=$(cat last-successful-version.txt)
-                                echo "Rolling back to version: ${PREV_VERSION}"
-                                if command -v eb &> /dev/null; then
-                                    eb deploy ${AWS_EB_ENV_NAME} --version-label v${PREV_VERSION} || {
-                                        echo "Rollback failed. Manual intervention required."
-                                    }
-                                else
-                                    echo "EB CLI not available. Manual rollback required."
+                    try {
+                        // Rollback to previous version (only if AWS deployment was enabled)
+                        if (env.ENABLE_AWS_DEPLOYMENT == 'true' && fileExists('infra/last-successful-version.txt')) {
+                            echo 'Attempting rollback...'
+                            sh '''
+                                cd infra
+                                if [ -f last-successful-version.txt ]; then
+                                    PREV_VERSION=$(cat last-successful-version.txt)
+                                    echo "Rolling back to version: ${PREV_VERSION}"
+                                    if command -v eb &> /dev/null; then
+                                        eb deploy ${AWS_EB_ENV_NAME} --version-label v${PREV_VERSION} || {
+                                            echo "Rollback failed. Manual intervention required."
+                                        }
+                                    else
+                                        echo "EB CLI not available. Manual rollback required."
+                                    fi
                                 fi
-                            fi
-                        '''
-                    } else {
-                        echo "No previous successful version found. Manual rollback required."
+                            '''
+                        } else {
+                            echo "AWS deployment not enabled or no previous version found. Skipping rollback."
+                        }
+                    } catch (Exception e) {
+                        echo "Rollback skipped: ${e.getMessage()}"
                     }
-                } catch (Exception e) {
-                    echo "Rollback skipped: ${e.getMessage()}"
-                }
             }
         }
         
